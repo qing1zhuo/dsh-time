@@ -10,8 +10,17 @@ import tkinter as tk
 from datetime import date, datetime, timedelta
 from tkinter import messagebox
 
-from . import autostart, logs, paths, shortcuts, sound, theme
-from .model import Entry, KIND_WEEKLY, humanize_delta, occurrences_on_day
+from . import autostart, logs, model, paths, shortcuts, sound, theme
+from .model import (
+    Entry,
+    KIND_WEEKLY,
+    humanize_delta,
+    monday_of,
+    occurrences_on_day,
+    parse_date,
+    set_term,
+    split_course_note,
+)
 from .scheduler import DueReminder, collect_due, group_due, next_reminder
 from .single_instance import InstanceGuard
 from .store import Store
@@ -78,6 +87,7 @@ class Application:
         if self.store.last_error:
             self.log.warning(self.store.last_error)
         self.settings = self.store.settings
+        self._apply_term()
 
         self.paused = False
         self.popups: list[ReminderPopup] = []
@@ -147,6 +157,36 @@ class Application:
 
     def _startup_balloon(self) -> None:
         self.tray_icon.notify("时间表已经在托盘里", "双击右下角的时钟图标，随时查看或添加安排。")
+
+    # ---------------------------------------------------------- 教学周
+
+    def _apply_term(self) -> None:
+        """把设置里的学期信息同步到模型上下文。"""
+        start = None
+        if self.settings.term_start:
+            try:
+                start = parse_date(self.settings.term_start)
+            except ValueError:
+                self.log.warning("教学周开始日期格式不对：%s", self.settings.term_start)
+        set_term(start, self.settings.term_weeks)
+        self.settings.term_start = model.TERM.start.isoformat() if model.TERM.start else ""
+
+    def set_term_start(self, day: date) -> None:
+        """指定第 1 周的周一（传任何一天都会归到那一周的周一）。"""
+        monday = monday_of(day)
+        self.settings.term_start = monday.isoformat()
+        set_term(monday, self.settings.term_weeks)
+        self.store.save()
+        self.log.info("教学周起始：%s（共 %s 周）", monday, self.settings.term_weeks)
+        self.main_window.refresh()
+        self.main_window.toast(f"第 1 周从 {monday:%Y 年 %m 月 %d 日}（周一）开始")
+
+    def set_term_weeks(self, weeks: int) -> None:
+        self.settings.term_weeks = max(1, min(52, int(weeks)))
+        set_term(model.TERM.start, self.settings.term_weeks)
+        self.store.save()
+        self.main_window.refresh()
+        self.main_window.toast(f"学期共 {self.settings.term_weeks} 周")
 
     # ---------------------------------------------------------- 主循环
 
@@ -414,10 +454,22 @@ class Application:
     def new_entry(self) -> None:
         self._open_dialog(None)
 
+    def new_entry_at(self, day: date, start: str, end: str) -> None:
+        """从课表空格子新建：预填那一周的星期和时间，默认是一门每周课程。"""
+        template = Entry(
+            kind=KIND_WEEKLY,
+            date_str=day.isoformat(),
+            weekdays=[day.isoweekday()],
+            start=start,
+            end=end,
+            term_limited=True,
+        )
+        self._open_dialog(None, template)
+
     def edit_entry(self, entry: Entry) -> None:
         self._open_dialog(entry)
 
-    def _open_dialog(self, entry: Entry | None) -> None:
+    def _open_dialog(self, entry: Entry | None, template: Entry | None = None) -> None:
         if not self.main_window.winfo_viewable():
             self.show_main()
         if self._dialog is not None:
@@ -427,7 +479,7 @@ class Application:
                 pass
             self._dialog = None
         try:
-            self._dialog = EntryDialog(self, entry.clone() if entry else None)
+            self._dialog = EntryDialog(self, entry.clone() if entry else None, template=template)
         except Exception:  # noqa: BLE001
             self.log.exception("打开日程对话框失败")
             messagebox.showerror("时间表", "打不开编辑窗口，详细信息记录在 data/app.log 里。", parent=self.main_window)
@@ -470,6 +522,44 @@ class Application:
         self.store.save()
         self.main_window.refresh()
         self._update_tray_tooltip()
+
+    def organize_course_tags(self) -> None:
+        """把备注里的「教室 老师」拆到课程标签里（只填空字段）。"""
+        targets = [
+            entry
+            for entry in self.store.entries
+            if entry.note.strip() and not (entry.room.strip() and entry.teacher.strip())
+        ]
+        if not targets:
+            self.main_window.toast("没有需要整理的日程")
+            return
+        confirmed = messagebox.askyesno(
+            "整理课程标签",
+            f"会扫描 {len(targets)} 条带备注的日程，把备注里的教室和老师填进空着的标签。\n\n"
+            "只填空字段，不会覆盖你已经填好的内容。",
+            parent=self.main_window,
+        )
+        if not confirmed:
+            return
+        changed = 0
+        for entry in targets:
+            room, teacher = split_course_note(entry.note)
+            touched = False
+            if room and not entry.room.strip():
+                entry.room = room
+                touched = True
+            if teacher and not entry.teacher.strip():
+                entry.teacher = teacher
+                touched = True
+            if touched:
+                changed += 1
+        if changed:
+            self.store.save()
+            self.main_window.refresh()
+            self.log.info("从备注整理课程标签：%s 条", changed)
+        self.main_window.toast(
+            f"已为 {changed} 条日程补上课程标签" if changed else "备注里没有可识别的教室或老师"
+        )
 
     def set_sound_enabled(self, enabled: bool) -> None:
         self.settings.sound_enabled = bool(enabled)

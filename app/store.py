@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .model import Entry
+from .model import DEFAULT_TERM_WEEKS, Entry
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int | None = None) -> int:
@@ -38,6 +38,9 @@ class Settings:
     pet_topmost: bool = True
     pet_x: int | None = None
     pet_y: int | None = None
+    # 教学周：term_start 是第 1 周的周一（ISO 日期），空字符串表示还没设置
+    term_start: str = ""
+    term_weeks: int = DEFAULT_TERM_WEEKS
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -65,6 +68,10 @@ class Settings:
             pet_topmost=bool(raw.get("pet_topmost", True)),
             pet_x=optional_int(raw.get("pet_x")),
             pet_y=optional_int(raw.get("pet_y")),
+            term_start=str(raw.get("term_start") or ""),
+            term_weeks=_clamp_int(
+                raw.get("term_weeks"), default=DEFAULT_TERM_WEEKS, minimum=1, maximum=52
+            ),
         )
 
 

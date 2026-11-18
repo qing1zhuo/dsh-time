@@ -1,27 +1,41 @@
-﻿"""主窗口：日程列表 + 今日概览 + 设置。"""
+"""主窗口：日程列表 + 今日概览 + 设置。"""
 
 from __future__ import annotations
 
 import tkinter as tk
 from datetime import date, datetime, timedelta
-from tkinter import font as tkfont
+from tkinter import font as tkfont, ttk
 from typing import Iterable
 
 from .model import (
     KIND_ONCE,
     KIND_WEEKLY,
+    TERM,
     WEEKDAY_CN,
     Entry,
     humanize_delta,
+    monday_of,
     occurrences_on_day,
 )
 from .scheduler import next_reminder
-from .theme import COLORS, FAMILY, font, px
-from .widgets import Badge, Card, Chip, Divider, MenuRow, RoundButton, ScrollFrame, Toggle
+from .theme import COLORS, FAMILY, course_color, font, px
+from .ui_week_grid import WeekGrid
+from .widgets import (
+    Badge,
+    CalendarPopup,
+    Card,
+    Chip,
+    Divider,
+    MenuRow,
+    RoundButton,
+    ScrollFrame,
+    Toggle,
+)
 
 FILTERS = (
     ("all", "全部"),
     ("today", "今天"),
+    ("grid", "课表"),
     ("once", "一次性"),
     ("weekly", "每周"),
 )
@@ -29,6 +43,7 @@ FILTERS = (
 FILTER_EMPTY = {
     "all": ("还没有任何安排", "点右上角「新建日程」，把要记住的事情放进来。"),
     "today": ("今天没有安排", "享受一下空闲，或者添加一条今天的日程。"),
+    "grid": ("课表还是空的", "点任意空白格子，就能按那个时间新建一条安排。"),
     "once": ("没有一次性日程", "适合约会、考试、旅行这类只发生一次的事。"),
     "weekly": ("没有每周重复的日程", "适合晨会、健身课、每周复盘这类固定安排。"),
 }
@@ -45,6 +60,7 @@ class MainWindow(tk.Toplevel):
         height = min(px(760), self.winfo_screenheight() - px(90))
         self.geometry(f"{px(1020)}x{height}")
         self._filter = "all"
+        self._grid_anchor: date | None = None
         self._toast_job: str | None = None
         self.protocol("WM_DELETE_WINDOW", self.app.hide_main)
         self._build()
@@ -140,7 +156,9 @@ class MainWindow(tk.Toplevel):
     def _build_sidebar(self, parent: tk.Misc) -> None:
         holder = tk.Frame(parent, bg=COLORS["bg"], width=px(304))
         holder.grid(row=0, column=1, sticky="nsew")
-        holder.grid_propagate(False)
+        # 子控件是 pack 进来的，要用 pack_propagate 才能锁住侧栏宽度，
+        # 否则侧栏会被「今天的安排」撑宽，把左边课表挤窄。
+        holder.pack_propagate(False)
         scroll = ScrollFrame(holder, bg=COLORS["bg"])
         scroll.pack(fill="both", expand=True)
         body = scroll.body
@@ -158,6 +176,65 @@ class MainWindow(tk.Toplevel):
         self.today_date_label.pack(side="right")
         self.today_rows = tk.Frame(today_card.content, bg=COLORS["surface"])
         self.today_rows.pack(fill="x", pady=(px(10), 0))
+
+        term_card = Card(body, pad=px(16))
+        term_card.pack(fill="x", pady=(0, px(12)))
+        term_head = tk.Frame(term_card.content, bg=COLORS["surface"])
+        term_head.pack(fill="x")
+        tk.Label(
+            term_head, text="教学周", font=font(11, "bold"), fg=COLORS["text"], bg=COLORS["surface"]
+        ).pack(side="left")
+        self.term_week_label = tk.Label(
+            term_head, text="", font=font(9), fg=COLORS["accent_ink"], bg=COLORS["surface"]
+        )
+        self.term_week_label.pack(side="right")
+        self.term_date_button = RoundButton(
+            term_card.content,
+            "选择第 1 周的周一",
+            self._pick_term_start,
+            kind="secondary",
+            height=34,
+            pad_x=12,
+            font_size=9,
+            weight="normal",
+            parent_bg=COLORS["surface"],
+            min_width=200,
+        )
+        self.term_date_button.pack(anchor="w", pady=(px(10), 0))
+        weeks_row = tk.Frame(term_card.content, bg=COLORS["surface"])
+        weeks_row.pack(fill="x", pady=(px(8), 0))
+        tk.Label(
+            weeks_row, text="学期共", font=font(9), fg=COLORS["text_2"], bg=COLORS["surface"]
+        ).pack(side="left")
+        self.term_weeks_var = tk.StringVar(value=str(self.app.settings.term_weeks))
+        self.term_weeks_combo = ttk.Combobox(
+            weeks_row,
+            textvariable=self.term_weeks_var,
+            values=[str(number) for number in range(1, 31)],
+            width=4,
+            state="readonly",
+            font=font(9),
+            justify="center",
+        )
+        self.term_weeks_combo.pack(side="left", padx=(px(6), 0))
+        self.term_weeks_combo.bind("<<ComboboxSelected>>", self._on_term_weeks)
+        tk.Label(
+            weeks_row, text="周", font=font(9), fg=COLORS["text_2"], bg=COLORS["surface"]
+        ).pack(side="left", padx=(px(4), 0))
+        tk.Label(
+            term_card.content,
+            text="每周日程默认只在这些周里提醒",
+            font=font(8),
+            fg=COLORS["text_3"],
+            bg=COLORS["surface"],
+            anchor="w",
+        ).pack(fill="x", pady=(px(6), 0))
+        Divider(term_card.content).pack(fill="x", pady=px(10))
+        MenuRow(
+            term_card.content,
+            "从备注整理课程标签",
+            self.app.organize_course_tags,
+        ).pack(fill="x")
 
         settings_card = Card(body, pad=px(16))
         settings_card.pack(fill="x", pady=(0, px(12)))
@@ -239,6 +316,44 @@ class MainWindow(tk.Toplevel):
         toggle.pack(side="right", padx=(px(8), 0))
         return toggle
 
+    # -- 教学周 -------------------------------------------------------
+
+    def _term_text(self) -> str:
+        if TERM.active and TERM.start:
+            return f"{TERM.start.year} 年 {TERM.start.month} 月 {TERM.start.day} 日"
+        return "选择第 1 周的周一"
+
+    def _pick_term_start(self) -> None:
+        CalendarPopup(
+            self,
+            TERM.start or date.today(),
+            self.app.set_term_start,
+            anchor=self.term_date_button,
+        )
+
+    def _on_term_weeks(self, _event=None) -> None:
+        try:
+            weeks = int(self.term_weeks_var.get())
+        except (tk.TclError, ValueError):
+            return
+        self.app.set_term_weeks(weeks)
+
+    def _refresh_term_card(self) -> None:
+        if TERM.active:
+            week = TERM.week_of(date.today())
+            if week is None:
+                label = "还没开学"
+            elif week > TERM.weeks:
+                label = "学期已结束"
+            else:
+                label = f"第 {week} 周 / 共 {TERM.weeks} 周"
+            self.term_date_button.set_text(self._term_text())
+        else:
+            label = "未设置"
+            self.term_date_button.set_text("选择第 1 周的周一")
+        self.term_week_label.configure(text=label)
+        self.term_weeks_var.set(str(TERM.weeks))
+
     # ---------------------------------------------------------- 数据视图
 
     def set_filter(self, key: str) -> None:
@@ -248,6 +363,20 @@ class MainWindow(tk.Toplevel):
         for filter_key, chip in self.filter_chips.items():
             chip.set_selected(filter_key == key)
         self._refresh_chips()
+        self.list_scroll.to_top()
+        self._refresh_list()
+
+    def _shift_grid(self, delta: int) -> None:
+        anchor = self._grid_anchor or monday_of(date.today())
+        self._grid_anchor = anchor + timedelta(weeks=delta)
+        self._refresh_chips()
+        self.list_scroll.to_top()
+        self._refresh_list()
+
+    def _grid_today(self) -> None:
+        self._grid_anchor = None
+        self._refresh_chips()
+        self.list_scroll.to_top()
         self._refresh_list()
 
     def refresh(self) -> None:
@@ -264,6 +393,9 @@ class MainWindow(tk.Toplevel):
             f"{today.year} 年 {today.month} 月 {today.day} 日",
             WEEKDAY_CN[today.isoweekday()],
         ]
+        week = TERM.week_of(today) if TERM.active else None
+        if week and week <= TERM.weeks:
+            parts.append(f"第 {week} 周")
         text = " · ".join(parts)
         if today_rows:
             text += f" · 今天 {len(today_rows)} 项安排"
@@ -282,9 +414,15 @@ class MainWindow(tk.Toplevel):
     def _refresh_chips(self) -> None:
         entries = self.app.store.entries
         today = date.today()
+        anchor = self._grid_anchor or monday_of(today)
+        courses = [entry for entry in self.app.store.enabled_entries() if entry.is_course]
+        week_count = sum(
+            len(occurrences_on_day(courses, anchor + timedelta(days=offset))) for offset in range(7)
+        )
         counts = {
             "all": len(entries),
             "today": len(occurrences_on_day(entries, today)),
+            "grid": week_count,
             "once": len([entry for entry in entries if entry.kind == KIND_ONCE]),
             "weekly": len([entry for entry in entries if entry.kind == KIND_WEEKLY]),
         }
@@ -310,7 +448,32 @@ class MainWindow(tk.Toplevel):
         entries = self.app.store.entries
         built = 0
 
-        if self._filter == "today":
+        if self._filter == "grid":
+            anchor = self._grid_anchor or monday_of(today)
+            courses = [
+                entry for entry in self.app.store.enabled_entries() if entry.is_course
+            ]
+            self._grid_widget = WeekGrid(
+                self.list_scroll.body,
+                courses,
+                anchor,
+                on_open=self.app.edit_entry,
+                on_pick_slot=self.app.new_entry_at,
+                on_shift=self._shift_grid,
+                on_today=self._grid_today,
+                course_only=True,
+            )
+            self._grid_widget.pack(fill="x", expand=True)
+            count = sum(
+                len(occurrences_on_day(courses, anchor + timedelta(days=offset)))
+                for offset in range(7)
+            )
+            week = TERM.week_of(anchor + timedelta(days=3)) if TERM.active else None
+            prefix = f"第 {week} 周" if week and week <= TERM.weeks else "课表"
+            self.count_label.configure(text=f"{prefix} · 共 {count} 项课程")
+            built = 1
+
+        elif self._filter == "today":
             rows = occurrences_on_day(entries, today)
             self.count_label.configure(text=f"今天 · 共 {len(rows)} 项")
             for entry, start_dt, end_dt in rows:
@@ -542,6 +705,12 @@ class MainWindow(tk.Toplevel):
         meta_parts: list[str] = []
         if entry.kind == KIND_WEEKLY:
             meta_parts.append(entry.weekday_label())
+            if TERM.active and entry.term_limited:
+                meta_parts.append(entry.week_span_label())
+        if entry.kind == KIND_WEEKLY and not entry.is_course:
+            meta_parts.append("不计入课表")
+        elif entry.kind == KIND_ONCE and entry.is_course:
+            meta_parts.append("计入课表")
         if entry.advance_minutes:
             meta_parts.append(entry.advance_label())
         meta_label = None
@@ -555,6 +724,17 @@ class MainWindow(tk.Toplevel):
                 anchor="w",
             )
             meta_label.pack(fill="x", pady=(px(4), 0))
+
+        tag_widgets: list[tk.Widget] = []
+        tags = self._entry_tags(entry)
+        if tags:
+            tag_row = tk.Frame(content, bg=surface)
+            tag_row.pack(fill="x", pady=(px(6), 0))
+            tag_widgets.append(tag_row)
+            for text, tag_fg, tag_bg in tags:
+                tag = Badge(tag_row, text, fg=tag_fg, bg=tag_bg, font_size=8)
+                tag.pack(side="left", padx=(0, px(5)))
+                tag_widgets.append(tag)
 
         note_label = None
         if entry.note:
@@ -631,10 +811,24 @@ class MainWindow(tk.Toplevel):
             clickable.append(meta_label)
         if note_label is not None:
             clickable.append(note_label)
+        clickable.extend(tag_widgets)
         for widget in clickable:
             widget.bind("<Button-1>", lambda _e, item=entry: self.app.edit_entry(item))
             widget.bind("<Enter>", lambda _e, target=card: self._hover_card(target, True))
             widget.bind("<Leave>", lambda _e, target=card: self._hover_card(target, False))
+
+    @staticmethod
+    def _entry_tags(entry: Entry) -> list[tuple[str, str, str]]:
+        """课程标签：科目（带色）、教室、老师、课次。"""
+        tags: list[tuple[str, str, str]] = []
+        subject = entry.subject.strip()
+        if subject and subject != (entry.title or "").strip():
+            tag_bg, tag_fg = course_color(subject)
+            tags.append((subject, tag_fg, tag_bg))
+        for value in (entry.room.strip(), entry.teacher.strip(), entry.period.strip()):
+            if value:
+                tags.append((value, COLORS["text_2"], COLORS["bg_alt"]))
+        return tags
 
     def _status_badge(
         self,
@@ -769,6 +963,7 @@ class MainWindow(tk.Toplevel):
                     anchor="w",
                 ).pack(fill="x")
 
+        self._refresh_term_card()
         self.sound_toggle.set_value(self.app.settings.sound_enabled, animate=False)
         self.pet_toggle.set_value(bool(self.app.settings.pet_enabled), animate=False)
         self.autostart_toggle.set_value(self.app.autostart_enabled(), animate=False)

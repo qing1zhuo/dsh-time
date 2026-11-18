@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import tkinter as tk
+import zlib
 from tkinter import font as tkfont, ttk
 
 # ------------------------------------------------------------------ 配色
@@ -38,6 +39,24 @@ COLORS = {
 SCALE = 1.0
 FAMILY = "Microsoft YaHei UI"
 FAMILY_MONO = "Consolas"
+
+# 课表色块：同一门课按标题哈希固定取一个颜色，每次打开都一样。
+COURSE_PALETTE = (
+    ("#EBF1FF", "#1F47B8"),  # 蓝
+    ("#E4F6EF", "#0B7A55"),  # 绿
+    ("#FDF1E0", "#9A5B06"),  # 橙
+    ("#F0ECFF", "#5B3FD6"),  # 紫
+    ("#FDECEC", "#B3261E"),  # 红
+    ("#E2F3F7", "#0E7490"),  # 青
+    ("#FBEFF6", "#A21C6B"),  # 粉
+    ("#EEF2E4", "#4D6515"),  # 橄榄
+)
+
+
+def course_color(name: str) -> tuple[str, str]:
+    """同一门课（按名字）固定一种色块配色。"""
+    key = (name or "").strip() or "?"
+    return COURSE_PALETTE[zlib.crc32(key.encode("utf-8")) % len(COURSE_PALETTE)]
 
 
 def enable_dpi_awareness() -> None:

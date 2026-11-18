@@ -9,15 +9,22 @@ from tkinter import messagebox, ttk
 from .model import (
     KIND_ONCE,
     KIND_WEEKLY,
+    PARITY_ALL,
+    PARITY_EVEN,
+    PARITY_LABELS,
+    PARITY_ODD,
+    TERM,
     WEEKDAY_CN,
     WEEKDAY_ORDER,
     WEEKDAY_SHORT,
     Entry,
     fmt_hhmm,
+    parse_date,
     parse_hhmm,
+    split_course_note,
 )
 from .theme import COLORS, font, px
-from .widgets import CalendarPopup, Chip, RoundButton
+from .widgets import CalendarPopup, Chip, RoundButton, Toggle
 
 TIME_OPTIONS = [f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in (0, 15, 30, 45)]
 
@@ -33,7 +40,9 @@ ADVANCE_OPTIONS = [
 
 
 class EntryDialog(tk.Toplevel):
-    def __init__(self, app, entry: Entry | None = None) -> None:  # noqa: ANN001
+    def __init__(
+        self, app, entry: Entry | None = None, template: Entry | None = None
+    ) -> None:  # noqa: ANN001
         self.app = app
         self.original = entry
         super().__init__(app.main_window)
@@ -47,20 +56,33 @@ class EntryDialog(tk.Toplevel):
 
         now = datetime.now()
         default_start, default_date = self._default_slot(now)
-        source = entry or Entry(
+        source = entry or template or Entry(
             kind=KIND_ONCE, date_str=default_date.isoformat(), weekdays=[], start=default_start
         )
-        if entry is None:
+        if entry is None and template is None:
             source.end = fmt_hhmm(self._plus_minutes(default_start, 60))
             if source.end <= source.start:
                 source.start = "09:00"
                 source.end = "10:00"
         self._kind = source.kind
-        self._date = source.day or default_date
+        source_date = None
+        if source.date_str:
+            try:
+                source_date = parse_date(source.date_str)
+            except ValueError:
+                source_date = None
+        self._date = source.day or source_date or default_date
         self._weekdays = set(source.weekdays) or {self._date.isoweekday()}
         self._start_value = fmt_hhmm(source.start_time)
         self._end_value = fmt_hhmm(source.end_time)
         self._advance = int(source.advance_minutes)
+        self._term_limited = bool(source.term_limited)
+        self._weeks_from = max(1, int(source.weeks_from))
+        self._weeks_to = max(0, int(source.weeks_to))
+        self._parity = source.parity if source.parity in PARITY_LABELS else PARITY_ALL
+        self._is_course = bool(source.is_course)
+        # 编辑已有条目时保留原来的勾选，不随类型切换自动改
+        self._course_touched = entry is not None
 
         self._build(source)
         self._apply_kind(self._kind, initial=True)
@@ -95,6 +117,10 @@ class EntryDialog(tk.Toplevel):
         outer.pack(fill="both", expand=True, padx=px(26), pady=px(22))
         # 用一个细长占位控件固定对话框宽度
         tk.Frame(outer, bg=COLORS["surface"], width=px(440), height=1).pack()
+        self.subject_var = tk.StringVar(value=source.subject)
+        self.teacher_var = tk.StringVar(value=source.teacher)
+        self.room_var = tk.StringVar(value=source.room)
+        self.period_var = tk.StringVar(value=source.period)
 
         tk.Label(
             outer,
@@ -106,7 +132,7 @@ class EntryDialog(tk.Toplevel):
         ).pack(fill="x")
         tk.Label(
             outer,
-            text="一次性选日期，固定安排选每周重复；同一时段可以添加多条，到点合并提醒。",
+            text="一次性选日期，固定安排选每周重复；每周默认计入课表，可单独关掉。同一时段可以添加多条，到点合并提醒。",
             font=font(9),
             fg=COLORS["text_3"],
             bg=COLORS["surface"],
@@ -130,6 +156,25 @@ class EntryDialog(tk.Toplevel):
             )
             chip.pack(side="left", padx=(0, px(8)))
             self.kind_chips[key] = chip
+
+        course_box = tk.Frame(kind_row, bg=COLORS["surface"])
+        course_box.pack(side="right")
+        tk.Label(
+            course_box,
+            text="计入课表",
+            font=font(9),
+            fg=COLORS["text_2"],
+            bg=COLORS["surface"],
+        ).pack(side="left", padx=(0, px(6)))
+        self.course_toggle = Toggle(
+            course_box,
+            self._is_course,
+            self._set_course,
+            parent_bg=COLORS["surface"],
+            width=42,
+            height=24,
+        )
+        self.course_toggle.pack(side="left")
 
         self.kind_body = tk.Frame(outer, bg=COLORS["surface"])
         self.kind_body.pack(fill="x", pady=(px(12), 0))
@@ -187,6 +232,45 @@ class EntryDialog(tk.Toplevel):
         self.time_hint.pack(side="left", padx=(px(12), 0))
         self.start_var, self.end_var = start_var, end_var
         self._point = bool(source.point)
+
+        course_header = tk.Frame(outer, bg=COLORS["surface"])
+        course_header.pack(fill="x", pady=(px(14), 0))
+        tk.Label(
+            course_header,
+            text="课程信息（可选）",
+            font=font(9, "bold"),
+            fg=COLORS["text_2"],
+            bg=COLORS["surface"],
+            anchor="w",
+        ).pack(side="left")
+        RoundButton(
+            course_header,
+            "从备注填入",
+            self._extract_from_note,
+            kind="ghost",
+            height=24,
+            pad_x=8,
+            font_size=8,
+            weight="normal",
+            parent_bg=COLORS["surface"],
+        ).pack(side="right")
+
+        fields = tk.Frame(outer, bg=COLORS["surface"])
+        fields.pack(fill="x", pady=(px(6), 0))
+        fields.grid_columnconfigure(0, weight=1, uniform="course")
+        fields.grid_columnconfigure(1, weight=1, uniform="course")
+        self._course_field(fields, 0, 0, "科目", self.subject_var)
+        self._course_field(fields, 0, 1, "老师", self.teacher_var)
+        self._course_field(fields, 1, 0, "教室", self.room_var)
+        self._course_field(fields, 1, 1, "课次", self.period_var)
+        tk.Label(
+            outer,
+            text="课次可以写「1-2节」；填了之后列表卡片和课表里会显示成标签。",
+            font=font(8),
+            fg=COLORS["text_3"],
+            bg=COLORS["surface"],
+            anchor="w",
+        ).pack(fill="x", pady=(px(2), 0))
 
         self._section_label(outer, "提前提醒", top=14)
         advance_row = tk.Frame(outer, bg=COLORS["surface"])
@@ -317,6 +401,59 @@ class EntryDialog(tk.Toplevel):
         )
         return combo
 
+    def _course_field(
+        self, parent: tk.Misc, row: int, column: int, label: str, variable: tk.StringVar
+    ) -> tk.Entry:
+        cell = tk.Frame(parent, bg=COLORS["surface"])
+        cell.grid(
+            row=row,
+            column=column,
+            sticky="ew",
+            padx=(0 if column == 0 else px(8), 0),
+            pady=(0, px(6)),
+        )
+        tk.Label(
+            cell,
+            text=label,
+            font=font(9),
+            fg=COLORS["text_2"],
+            bg=COLORS["surface"],
+            width=4,
+            anchor="e",
+        ).pack(side="left", padx=(0, px(6)))
+        entry = tk.Entry(
+            cell,
+            textvariable=variable,
+            width=1,
+            font=font(9),
+            bg=COLORS["surface_2"],
+            fg=COLORS["text"],
+            insertbackground=COLORS["text"],
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=COLORS["border_strong"],
+            highlightcolor=COLORS["accent"],
+        )
+        entry.pack(side="left", fill="x", expand=True, ipady=px(5))
+        return entry
+
+    def _extract_from_note(self) -> None:
+        room, teacher = split_course_note(self.note_text.get("1.0", "end"))
+        filled: list[str] = []
+        if room and not self.room_var.get().strip():
+            self.room_var.set(room)
+            filled.append("教室")
+        if teacher and not self.teacher_var.get().strip():
+            self.teacher_var.set(teacher)
+            filled.append("老师")
+        if filled:
+            self.error_label.configure(text="已填入：" + "、".join(filled), fg=COLORS["green"])
+        else:
+            self.error_label.configure(
+                text="备注里没找到教室或老师，手动填一下也可以。", fg=COLORS["text_3"]
+            )
+
     def _build_once_box(self, parent: tk.Misc) -> None:
         self.once_box = tk.Frame(parent, bg=COLORS["surface"])
         self._section_label(self.once_box, "日期", top=0)
@@ -368,6 +505,99 @@ class EntryDialog(tk.Toplevel):
             )
             chip.pack(side="left", padx=(0, px(6)))
             self.weekday_chips[day] = chip
+        self._build_week_span(self.weekly_box)
+
+    def _build_week_span(self, parent: tk.Misc) -> None:
+        header = tk.Frame(parent, bg=COLORS["surface"])
+        header.pack(fill="x", pady=(px(14), 0))
+        tk.Label(
+            header,
+            text="生效周次",
+            font=font(9, "bold"),
+            fg=COLORS["text_2"],
+            bg=COLORS["surface"],
+        ).pack(side="left")
+        parity_box = tk.Frame(header, bg=COLORS["surface"])
+        parity_box.pack(side="right")
+        self.parity_chips: dict[str, Chip] = {}
+        for key, label in ((PARITY_ALL, "每周"), (PARITY_ODD, "单周"), (PARITY_EVEN, "双周")):
+            chip = Chip(
+                parity_box,
+                label,
+                lambda k=key: self._set_parity(k),
+                selected=key == self._parity,
+                height=26,
+                pad_x=10,
+                font_size=8,
+                parent_bg=COLORS["surface"],
+                min_width=0,
+            )
+            chip.pack(side="left", padx=(px(6), 0))
+            self.parity_chips[key] = chip
+
+        row = tk.Frame(parent, bg=COLORS["surface"])
+        row.pack(fill="x", pady=(px(6), 0))
+        self.term_chip = Chip(
+            row,
+            "按教学周",
+            self._toggle_term_limited,
+            selected=self._term_limited,
+            height=30,
+            pad_x=12,
+            font_size=9,
+            parent_bg=COLORS["surface"],
+        )
+        self.term_chip.pack(side="left")
+
+        week_values = [str(number) for number in range(1, 53)]
+        tk.Label(row, text="第", font=font(9), fg=COLORS["text_2"], bg=COLORS["surface"]).pack(
+            side="left", padx=(px(10), px(4))
+        )
+        self.weeks_from_var = tk.StringVar(value=str(self._weeks_from))
+        self.weeks_from_combo = ttk.Combobox(
+            row,
+            textvariable=self.weeks_from_var,
+            values=week_values,
+            width=3,
+            state="readonly",
+            font=font(9),
+            justify="center",
+        )
+        self.weeks_from_combo.pack(side="left")
+        tk.Label(row, text="周 到", font=font(9), fg=COLORS["text_2"], bg=COLORS["surface"]).pack(
+            side="left", padx=(px(6), px(4))
+        )
+        self.weeks_to_var = tk.StringVar(
+            value="学期末" if self._weeks_to <= 0 else str(self._weeks_to)
+        )
+        self.weeks_to_combo = ttk.Combobox(
+            row,
+            textvariable=self.weeks_to_var,
+            values=["学期末"] + week_values,
+            width=6,
+            state="readonly",
+            font=font(9),
+            justify="center",
+        )
+        self.weeks_to_combo.pack(side="left")
+        tk.Label(row, text="周", font=font(9), fg=COLORS["text_2"], bg=COLORS["surface"]).pack(
+            side="left", padx=(px(4), 0)
+        )
+        self.weeks_from_combo.bind("<<ComboboxSelected>>", self._read_weeks)
+        self.weeks_to_combo.bind("<<ComboboxSelected>>", self._read_weeks)
+
+        self.term_hint = tk.Label(
+            parent,
+            text="",
+            font=font(8),
+            fg=COLORS["text_3"],
+            bg=COLORS["surface"],
+            anchor="w",
+            justify="left",
+            wraplength=px(400),
+        )
+        self.term_hint.pack(fill="x", pady=(px(4), 0))
+        self._sync_week_controls()
 
     # ---------------------------------------------------------- 状态
 
@@ -388,10 +618,65 @@ class EntryDialog(tk.Toplevel):
         chip = self.weekday_chips[day]
         chip.set_selected(day in self._weekdays)
 
+    def _set_course(self, value: bool) -> None:
+        self._is_course = bool(value)
+        self._course_touched = True
+        if hasattr(self, "error_label"):
+            self.error_label.configure(text="")
+
+    # -- 生效周次 -----------------------------------------------------
+
+    def _set_parity(self, parity: str) -> None:
+        self._parity = parity
+        for key, chip in self.parity_chips.items():
+            chip.set_selected(key == parity)
+        if hasattr(self, "error_label"):
+            self.error_label.configure(text="")
+
+    def _toggle_term_limited(self) -> None:
+        self._term_limited = not self._term_limited
+        self._sync_week_controls()
+
+    def _read_weeks(self, _event=None) -> None:
+        try:
+            from_week = int(self.weeks_from_var.get())
+        except (tk.TclError, ValueError):
+            from_week = 1
+        raw_to = self.weeks_to_var.get().strip()
+        try:
+            to_week = 0 if raw_to in ("", "学期末") else int(raw_to)
+        except ValueError:
+            to_week = 0
+        if to_week and to_week < from_week:
+            # 结束周早于开始周时直接抬到开始周，避免保存时才报错
+            to_week = from_week
+            self.weeks_to_var.set(str(to_week))
+        self._weeks_from, self._weeks_to = max(1, from_week), to_week
+        self._sync_week_controls()
+
+    def _sync_week_controls(self) -> None:
+        self.term_chip.set_selected(self._term_limited)
+        state = "readonly" if self._term_limited else "disabled"
+        self.weeks_from_combo.configure(state=state)
+        self.weeks_to_combo.configure(state=state)
+        if not self._term_limited:
+            hint = "关闭后不管教学周，一年到头都按每周重复提醒。"
+        elif not TERM.active:
+            hint = "还没设置学期开始日期（主窗口右侧「教学周」），暂时不按周次限制。"
+        else:
+            week = TERM.week_of(date.today())
+            prefix = f"现在是第 {week} 周 · " if week else "还没开学 · "
+            hint = prefix + "只在这些周里提醒，超出范围就不响。"
+        self.term_hint.configure(text=hint)
+
     def _apply_kind(self, kind: str, initial: bool = False) -> None:
         self._kind = kind
         for key, chip in self.kind_chips.items():
             chip.set_selected(key == kind)
+        if not initial and not self._course_touched:
+            # 新建时跟随类型：每周默认计入课表，一次性默认不计入
+            self._is_course = kind == KIND_WEEKLY
+            self.course_toggle.set_value(self._is_course, animate=False)
         self.once_box.pack_forget()
         self.weekly_box.pack_forget()
         if kind == KIND_ONCE:
@@ -448,6 +733,11 @@ class EntryDialog(tk.Toplevel):
         entry = self.original.clone() if self.original else Entry()
         entry.title = self.title_var.get().strip()
         entry.note = self.note_text.get("1.0", "end").strip()
+        entry.subject = self.subject_var.get().strip()
+        entry.teacher = self.teacher_var.get().strip()
+        entry.room = self.room_var.get().strip()
+        entry.period = self.period_var.get().strip()
+        entry.is_course = bool(self._is_course)
         entry.kind = self._kind
         entry.point = self._point
         entry.start = self.start_var.get().strip()
@@ -455,8 +745,17 @@ class EntryDialog(tk.Toplevel):
         if self._kind == KIND_ONCE:
             entry.date_str = self._date.isoformat()
             entry.weekdays = []
+            entry.weeks_from = 1
+            entry.weeks_to = 0
+            entry.parity = PARITY_ALL
+            entry.term_limited = True
         else:
             entry.weekdays = sorted(self._weekdays)
+            self._read_weeks()
+            entry.weeks_from = self._weeks_from
+            entry.weeks_to = self._weeks_to
+            entry.parity = self._parity
+            entry.term_limited = self._term_limited
         entry.advance_minutes = dict(
             (label, value) for label, value in ADVANCE_OPTIONS
         ).get(self.advance_var.get(), 0)
@@ -468,7 +767,7 @@ class EntryDialog(tk.Toplevel):
         entry = self._collect()
         errors = entry.validate()
         if errors:
-            self.error_label.configure(text="；".join(errors))
+            self.error_label.configure(text="；".join(errors), fg=COLORS["red"])
             return
         self.app.save_entry(entry, is_new=self.original is None)
         self.close()

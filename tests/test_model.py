@@ -15,13 +15,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.model import (  # noqa: E402
+    DEFAULT_TERM_WEEKS,
+    PARITY_EVEN,
+    PARITY_ODD,
+    TERM,
     Entry,
     fmt_hhmm,
     humanize_delta,
+    monday_of,
     next_upcoming,
     occurrences_on_day,
     parse_date,
     parse_hhmm,
+    set_term,
+    split_course_note,
 )
 from app.scheduler import collect_due, group_due, next_reminder  # noqa: E402
 from app.store import Settings, Store  # noqa: E402
@@ -300,6 +307,190 @@ class PointAndDoneTests(unittest.TestCase):
         self.assertEqual(restored.duration_minutes, 0)
 
 
+class TermWeekTests(unittest.TestCase):
+    """教学周：学期开始、周次范围、单双周。"""
+
+    def setUp(self):
+        # 2026-09-07 是周一，第 1 周
+        set_term(date(2026, 9, 7), 16)
+
+    def tearDown(self):
+        set_term(None, DEFAULT_TERM_WEEKS)
+
+    def test_term_start_normalized_to_monday(self):
+        self.assertEqual(TERM.start, date(2026, 9, 7))
+        set_term(date(2026, 9, 9))  # 周三
+        self.assertEqual(TERM.start, date(2026, 9, 7))
+        self.assertEqual(monday_of(date(2026, 11, 18)), date(2026, 11, 16))
+
+    def test_week_numbering(self):
+        self.assertEqual(TERM.week_of(date(2026, 9, 7)), 1)
+        self.assertEqual(TERM.week_of(date(2026, 9, 13)), 1)  # 周日仍属第 1 周
+        self.assertEqual(TERM.week_of(date(2026, 9, 14)), 2)
+        self.assertIsNone(TERM.week_of(date(2026, 9, 6)))  # 开学前
+        self.assertEqual(TERM.week_of(date(2026, 11, 18)), 11)
+
+    def test_weekly_limited_to_term(self):
+        entry = Entry(title="离散数学", kind="weekly", weekdays=[3], start="10:10", end="11:50")
+        self.assertTrue(entry.occurs_on(date(2026, 11, 18)))  # 第 11 周
+        self.assertFalse(entry.occurs_on(date(2026, 9, 2)))  # 开学前
+        self.assertTrue(entry.occurs_on(date(2026, 12, 23)))  # 第 16 周最后一周
+        self.assertFalse(entry.occurs_on(date(2026, 12, 30)))  # 第 17 周，超出 16
+        self.assertFalse(entry.occurs_on(date(2027, 3, 3)))
+
+    def test_term_limited_off_ignores_weeks(self):
+        entry = Entry(
+            title="常驻", kind="weekly", weekdays=[3], start="10:00", end="11:00", term_limited=False
+        )
+        self.assertTrue(entry.occurs_on(date(2026, 9, 2)))
+        self.assertTrue(entry.occurs_on(date(2027, 3, 3)))
+
+    def test_without_term_is_legacy_behavior(self):
+        set_term(None)
+        entry = Entry(title="常驻", kind="weekly", weekdays=[3], start="10:00", end="11:00")
+        self.assertTrue(entry.occurs_on(date(2026, 11, 18)))
+        self.assertTrue(entry.occurs_on(date(2027, 3, 3)))
+
+    def test_odd_even_weeks(self):
+        odd = Entry(
+            title="单周课", kind="weekly", weekdays=[3], start="10:00", end="11:00", parity=PARITY_ODD
+        )
+        even = Entry(
+            title="双周课", kind="weekly", weekdays=[3], start="10:00", end="11:00", parity=PARITY_EVEN
+        )
+        self.assertTrue(odd.occurs_on(date(2026, 11, 18)))  # 第 11 周
+        self.assertFalse(even.occurs_on(date(2026, 11, 18)))
+        self.assertTrue(even.occurs_on(date(2026, 11, 25)))  # 第 12 周
+        self.assertFalse(odd.occurs_on(date(2026, 11, 25)))
+
+    def test_custom_week_range(self):
+        entry = Entry(
+            title="后半学期", kind="weekly", weekdays=[3], start="10:00", end="11:00",
+            weeks_from=2, weeks_to=4,
+        )
+        self.assertFalse(entry.occurs_on(date(2026, 9, 9)))  # 第 1 周
+        self.assertTrue(entry.occurs_on(date(2026, 9, 16)))  # 第 2 周
+        self.assertTrue(entry.occurs_on(date(2026, 9, 30)))  # 第 4 周
+        self.assertFalse(entry.occurs_on(date(2026, 10, 7)))  # 第 5 周
+
+    def test_weeks_to_zero_means_end_of_term(self):
+        entry = Entry(
+            title="到期末", kind="weekly", weekdays=[3], start="10:00", end="11:00", weeks_from=10
+        )
+        self.assertFalse(entry.occurs_on(date(2026, 11, 4)))  # 第 9 周
+        self.assertTrue(entry.occurs_on(date(2026, 11, 11)))  # 第 10 周
+        self.assertTrue(entry.occurs_on(date(2026, 12, 23)))  # 第 16 周
+
+    def test_next_occurrence_respects_week_range(self):
+        entry = Entry(
+            title="第三周开始", kind="weekly", weekdays=[3], start="10:00", end="11:00",
+            weeks_from=3, weeks_to=3,
+        )
+        found = entry.next_occurrence(datetime(2026, 9, 7, 8, 0))
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0].date(), date(2026, 9, 23))
+        self.assertIsNone(entry.next_occurrence(datetime(2026, 9, 30, 0, 0)))
+
+    def test_scheduler_respects_term(self):
+        entry = Entry(title="课", kind="weekly", weekdays=[3], start="10:00", end="11:00")
+        self.assertEqual(collect_due([entry], datetime(2026, 9, 2, 10, 0)), [])
+        self.assertEqual(len(collect_due([entry], datetime(2026, 11, 18, 10, 0))), 1)
+
+    def test_week_span_label(self):
+        entry = Entry(
+            title="x", kind="weekly", weekdays=[1], weeks_from=3, weeks_to=9, parity=PARITY_EVEN
+        )
+        self.assertEqual(entry.week_span_label(), "第 3–9 周 · 双周")
+        full = Entry(title="y", kind="weekly", weekdays=[1])
+        self.assertEqual(full.week_span_label(), f"第 1–{TERM.weeks} 周")
+        always = Entry(title="z", kind="weekly", weekdays=[1], term_limited=False)
+        self.assertEqual(always.week_span_label(), "不限周次")
+
+    def test_week_fields_roundtrip(self):
+        entry = Entry(
+            title="单双周", kind="weekly", weekdays=[1, 3], weeks_from=3, weeks_to=9,
+            parity=PARITY_ODD, term_limited=False,
+        )
+        restored = Entry.from_dict(entry.to_dict())
+        self.assertEqual(restored.weeks_from, 3)
+        self.assertEqual(restored.weeks_to, 9)
+        self.assertEqual(restored.parity, PARITY_ODD)
+        self.assertFalse(restored.term_limited)
+        # 旧数据没有这些字段，按「整学期、每周」处理
+        legacy = Entry.from_dict({"title": "老数据", "kind": "weekly", "weekdays": [2]})
+        self.assertEqual(legacy.weeks_from, 1)
+        self.assertEqual(legacy.weeks_to, 0)
+        self.assertEqual(legacy.parity, "all")
+        self.assertTrue(legacy.term_limited)
+
+    def test_validate_week_range(self):
+        entry = Entry(title="x", kind="weekly", weekdays=[1], weeks_from=5, weeks_to=3)
+        errors = entry.validate(date(2026, 9, 7))
+        self.assertTrue(any("结束周" in error for error in errors))
+        too_late = Entry(title="x", kind="weekly", weekdays=[1], weeks_from=20)
+        self.assertTrue(any("学期总周数" in error for error in too_late.validate(date(2026, 9, 7))))
+
+
+class CourseTagTests(unittest.TestCase):
+    """备注里的教室 / 老师拆分，以及课程标签的存取。"""
+
+    def test_split_common_notes(self):
+        self.assertEqual(split_course_note("公共教学楼D203 李绿周"), ("公共教学楼D203", "李绿周"))
+        self.assertEqual(split_course_note("实验中心D501 李博洋"), ("实验中心D501", "李博洋"))
+        self.assertEqual(split_course_note("公共教学楼D302 郑培嘉"), ("公共教学楼D302", "郑培嘉"))
+        self.assertEqual(split_course_note("南校园二教"), ("南校园二教", ""))
+        self.assertEqual(split_course_note("HCP 具身\n王可泽老师"), ("", "王可泽"))
+        self.assertEqual(split_course_note("记得提交证明！！！！"), ("", ""))
+        self.assertEqual(split_course_note(""), ("", ""))
+
+    def test_split_ignores_extra_lines(self):
+        room, teacher = split_course_note("公共教学楼D203 李绿周\n记得带教材")
+        self.assertEqual((room, teacher), ("公共教学楼D203", "李绿周"))
+
+    def test_course_fields_roundtrip(self):
+        entry = Entry(
+            title="离散数学",
+            subject="离散数学",
+            teacher="李绿周",
+            room="公共教学楼D203",
+            period="1-2节",
+            kind="weekly",
+            weekdays=[4],
+        )
+        restored = Entry.from_dict(entry.to_dict())
+        self.assertEqual(restored.subject, "离散数学")
+        self.assertEqual(restored.teacher, "李绿周")
+        self.assertEqual(restored.room, "公共教学楼D203")
+        self.assertEqual(restored.period, "1-2节")
+
+    def test_legacy_entry_has_empty_tags(self):
+        legacy = Entry.from_dict({"title": "老数据", "kind": "weekly", "weekdays": [2]})
+        self.assertEqual(
+            (legacy.subject, legacy.teacher, legacy.room, legacy.period), ("", "", "", "")
+        )
+
+    def test_course_flag_defaults_by_kind(self):
+        self.assertTrue(Entry(title="课", kind="weekly", weekdays=[1]).is_course)
+        self.assertFalse(Entry(title="跑腿", kind="once", date_str="2026-11-19").is_course)
+        # 一次性也可以手动标记成课程（比如考试）
+        self.assertTrue(
+            Entry(title="小测", kind="once", date_str="2026-11-19", is_course=True).is_course
+        )
+
+    def test_course_flag_roundtrip_and_legacy(self):
+        weekly_off = Entry(title="每周打扫", kind="weekly", weekdays=[6], is_course=False)
+        data = weekly_off.to_dict()
+        self.assertFalse(data["is_course"])
+        self.assertFalse(Entry.from_dict(data).is_course)
+
+        legacy_weekly = Entry.from_dict({"title": "课", "kind": "weekly", "weekdays": [1]})
+        self.assertTrue(legacy_weekly.is_course)
+        legacy_once = Entry.from_dict(
+            {"title": "取快递", "kind": "once", "date": "2026-11-19"}
+        )
+        self.assertFalse(legacy_once.is_course)
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -322,6 +513,17 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(other.entries), 1)
         self.assertEqual(other.entries[0].title, "写周报")
         self.assertFalse(other.settings.sound_enabled)
+
+    def test_term_settings_roundtrip(self):
+        store = Store(self.path)
+        store.load()
+        store.settings.term_start = "2026-09-07"
+        store.settings.term_weeks = 16
+        self.assertTrue(store.save())
+        other = Store(self.path)
+        other.load()
+        self.assertEqual(other.settings.term_start, "2026-09-07")
+        self.assertEqual(other.settings.term_weeks, 16)
 
     def test_corrupt_file_is_backed_up(self):
         self.path.write_text("{ this is not json", encoding="utf-8")

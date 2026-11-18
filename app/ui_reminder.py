@@ -114,6 +114,19 @@ class ReminderPopup(tk.Toplevel):
         )
         meta.pack(fill="x", pady=(px(3), 0))
 
+        detail = self._course_detail(entry)
+        if detail:
+            tk.Label(
+                content,
+                text=detail,
+                font=font(9),
+                fg=COLORS["text_2"],
+                bg=surface,
+                anchor="w",
+                justify="left",
+                wraplength=self._card_w - px(58),
+            ).pack(fill="x", pady=(px(3), 0))
+
         if entry.note:
             note = entry.note.replace("\n", " ").strip()
             if len(note) > 90:
@@ -209,13 +222,16 @@ class ReminderPopup(tk.Toplevel):
                 bg=surface,
             ).pack(side="right")
 
+        secondary = self._course_detail(entry)
         if entry.note:
             note = entry.note.replace("\n", " ").strip()
-            if len(note) > 30:
-                note = note[:30] + "…"
+            secondary = " · ".join(part for part in (secondary, note) if part)
+        if secondary:
+            if len(secondary) > 30:
+                secondary = secondary[:30] + "…"
             tk.Label(
                 box,
-                text=note,
+                text=secondary,
                 font=font(8),
                 fg=COLORS["text_3"],
                 bg=surface,
@@ -290,6 +306,11 @@ class ReminderPopup(tk.Toplevel):
         ).pack(side="right", padx=(0, px(6)))
 
     # ---------------------------------------------------------- 文案
+
+    @staticmethod
+    def _course_detail(entry) -> str:  # noqa: ANN001
+        parts = [entry.room.strip(), entry.teacher.strip(), entry.period.strip()]
+        return " · ".join(part for part in parts if part)
 
     def _heading_style(self, heading: str | None) -> tuple[str, str]:
         count = len(self.dues)
