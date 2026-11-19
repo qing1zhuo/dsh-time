@@ -36,6 +36,7 @@ class Settings:
     autostart_choice: str = "auto"
     pet_enabled: bool = True
     pet_topmost: bool = True
+    pet_scale: float = 1.0
     pet_x: int | None = None
     pet_y: int | None = None
     # 教学周：term_start 是第 1 周的周一（ISO 日期），空字符串表示还没设置
@@ -58,6 +59,15 @@ class Settings:
             except (TypeError, ValueError):
                 return None
 
+        def pet_scale(value: Any) -> float:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return 1.0
+            if number != number:  # NaN
+                return 1.0
+            return max(0.6, min(1.8, round(number, 2)))
+
         return cls(
             sound_enabled=bool(raw.get("sound_enabled", True)),
             start_minimized=bool(raw.get("start_minimized", True)),
@@ -66,6 +76,7 @@ class Settings:
             autostart_choice=choice,
             pet_enabled=bool(raw.get("pet_enabled", True)),
             pet_topmost=bool(raw.get("pet_topmost", True)),
+            pet_scale=pet_scale(raw.get("pet_scale", 1.0)),
             pet_x=optional_int(raw.get("pet_x")),
             pet_y=optional_int(raw.get("pet_y")),
             term_start=str(raw.get("term_start") or ""),

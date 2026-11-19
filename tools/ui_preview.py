@@ -17,7 +17,6 @@ from app import model, theme  # noqa: E402
 from app.model import KIND_WEEKLY, Entry, monday_of  # noqa: E402
 from app.scheduler import DueReminder  # noqa: E402
 from app.store import Settings, Store  # noqa: E402
-from app.ui_desktop_pet import DesktopPet  # noqa: E402
 from app.ui_entry_dialog import EntryDialog  # noqa: E402
 from app.ui_main import MainWindow  # noqa: E402
 from app.ui_reminder import ReminderPopup  # noqa: E402
@@ -137,9 +136,110 @@ def sample_week_entries() -> list[Entry]:
     ]
 
 
+SAMPLE_PET_INFO = {
+    "clock": "14:32",
+    "date": "11 月 19 日 周三",
+    "paused": False,
+    "current_title": "离散数学",
+    "current_status": "还剩 25 分钟",
+    "status_color": "green",
+    "progress": 0.62,
+    "next_text": "15:00  交作业 · 28 分钟后",
+}
+
+
+def capture_info_panel(target: Path) -> "Image.Image | None":
+    """把悬停信息卡单独截出来，抠掉圆角外面的底，供合成预览图用。"""
+    import time
+
+    from PIL import Image, ImageDraw
+
+    from app.ui_pet_info import PetInfoPanel
+
+    theme.enable_dpi_awareness()
+    root = tk.Tk()
+    root.withdraw()
+    theme.init(root)
+    theme.setup_ttk(root)
+    panel = PetInfoPanel(root)
+    panel.prepare(SAMPLE_PET_INFO)
+    panel.show_at(80, 80)
+    deadline = time.time() + 0.5
+    while time.time() < deadline:
+        root.update()
+        time.sleep(0.02)
+    ok = capture_hwnd(panel.winfo_id(), target)
+    panel.destroy()
+    root.destroy()
+    if not ok or not target.exists():
+        return None
+
+    with Image.open(target) as raw:
+        image = raw.convert("RGBA")
+    mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, image.width - 1, image.height - 1), radius=max(4, round(12 * theme.SCALE)), fill=255
+    )
+    image.putalpha(mask)
+    return image
+
+
+def render_pet_preview(out: Path, with_panel: bool = False) -> bool:
+    """桌宠是原生分层窗口，PrintWindow 抓不到，这里直接按素材合成一张预览图。"""
+    from PIL import Image, ImageDraw
+
+    from app import paths
+
+    frame_path = paths.ASSETS_DIR / "pet" / "whale-girl-open.png"
+    if not frame_path.exists():
+        print(f"缺少桌宠素材：{frame_path}")
+        return False
+    with Image.open(frame_path) as image:
+        pet = image.convert("RGBA")
+    pet.thumbnail((400, 400), Image.LANCZOS)
+
+    panel = None
+    if with_panel:
+        import tempfile
+
+        tmp = Path(tempfile.gettempdir()) / "timetable-pet-info-panel.png"
+        panel = capture_info_panel(tmp)
+
+    width = max(820, pet.width + 240, (panel.width + 120) if panel else 0)
+    height = 40 + pet.height + 40 + ((panel.height + 16) if panel else 0)
+    canvas = Image.new("RGB", (width, height), "#EEF2F8")
+    top = (223, 232, 246)
+    bottom = (247, 249, 253)
+    draw = ImageDraw.Draw(canvas)
+    for y in range(height):
+        ratio = y / max(1, height - 1)
+        draw.line(
+            [(0, y), (width, y)],
+            fill=tuple(round(top[i] + (bottom[i] - top[i]) * ratio) for i in range(3)),
+        )
+
+    pet_x = (width - pet.width) // 2
+    pet_y = height - pet.height - 40
+    canvas.paste(pet, (pet_x, pet_y), pet)
+
+    if panel is not None:
+        panel_x = max(12, pet_x + pet.width // 2 - panel.width // 2)
+        panel_y = pet_y - panel.height - 16
+        canvas.paste(panel, (panel_x, max(12, panel_y)), panel)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out)
+    return True
+
+
 def main() -> int:
     mode = sys.argv[1] if len(sys.argv) > 1 else "dialog"
     out = Path(sys.argv[2] if len(sys.argv) > 2 else f"build/preview-{mode}.png")
+
+    if mode.startswith("pet"):
+        ok = render_pet_preview(out, with_panel=mode == "pet-hover")
+        print(f"captured={ok} -> {out}")
+        return 0 if ok else 2
 
     theme.enable_dpi_awareness()
     root = tk.Tk()
@@ -187,45 +287,6 @@ def main() -> int:
         second.entry.note = "把报价单和排期一起发过去"
         second.key = "preview|2"
         window = ReminderPopup(app, [base, second], index=0)
-    elif mode.startswith("pet"):
-        now = datetime.now()
-        entries: list[Entry] = []
-        if mode == "pet-current":
-            entries = [
-                Entry(
-                    title="写本周周报",
-                    kind="once",
-                    date_str=date.today().isoformat(),
-                    start=(now - timedelta(minutes=40)).strftime("%H:%M"),
-                    end=(now + timedelta(minutes=20)).strftime("%H:%M"),
-                ),
-                Entry(
-                    title="和设计对需求",
-                    kind="once",
-                    date_str=date.today().isoformat(),
-                    start=(now + timedelta(minutes=10)).strftime("%H:%M"),
-                    end=(now + timedelta(minutes=40)).strftime("%H:%M"),
-                ),
-            ]
-        elif mode == "pet-point":
-            entries = [
-                Entry(
-                    title="吃药",
-                    kind="weekly",
-                    weekdays=[now.isoweekday()],
-                    start=(now - timedelta(minutes=25)).strftime("%H:%M"),
-                    point=True,
-                ),
-                Entry(
-                    title="交水电费",
-                    kind="once",
-                    date_str=date.today().isoformat(),
-                    start=(now + timedelta(minutes=25)).strftime("%H:%M"),
-                    point=True,
-                ),
-            ]
-        app.store.entries = entries
-        window = DesktopPet(app)
     elif mode == "grid":
         model.set_term(monday_of(date.today()) - timedelta(weeks=10), 16)
         host = tk.Toplevel(root)

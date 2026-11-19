@@ -6,14 +6,14 @@
 
 ![周课表视图](docs/screenshot-grid.png)
 
-![左下角常驻小窗](docs/screenshot-pet.png)
+![左下角的鲸鱼娘桌宠](docs/screenshot-pet.png)
 
 ![提醒卡片](docs/screenshot-popup.png)
 
 ![时间点提醒（点「已完成」打勾）](docs/screenshot-point.png)
 
 - 双击 `timetable.pyw` 启动，没有黑框，直接缩在右下角托盘里
-- **左下角有一个常驻小窗**（桌宠式）：一直显示现在几点、正在做什么、还剩多久、接下来是什么；可以拖动到任意位置，位置会记住
+- **左下角站着一只会眨眼的鲸鱼娘**（桌宠）：逐像素透明地蹲在桌面上，鼠标停上去会浮出「现在／接下来」信息卡，滚轮能调大小，单击打开主窗口，按住可以拖到任意位置
 - 支持**一次性日程**（指定日期）和**每周重复**（可多选星期，例如每周一、三、五）
 - **周课表视图**：只画勾了「计入课表」的日程，周一~周日 × 时间轴，按科目自动配色；点色块编辑，点空白格子加一门课
 - **教学周与单双周**：设置学期第 1 周周一和总周数，课程只在这些周提醒；单条课程还能设起止周、单周/双周
@@ -85,16 +85,24 @@
 - 「删除」→ 每周事项会提示删除整个系列
 - 课表视图里点色块 → 编辑；点空白格子 → 新建；`‹` `›` 翻周
 
-## 左下角小窗（桌宠）
+## 左下角小窗（鲸鱼娘桌宠）
 
-启动后会一直待在屏幕左下角，分两块显示：
+启动后，一只会眨眼的鲸鱼娘站在屏幕左下角，平时只画她自己，不在桌面上写文字：
 
-- **当前要做的事**：正在进行的时间段日程（带剩余时间和进度条），或者已经到点但还没打勾的时间点提醒（标注「已过 N 分钟」）；没有就明确写「当前无事项」
-- **接下来要做的事**：最近的一条未完成安排，例如「23:42 和设计对需求 · 9 分钟后」；没有就写「接下来无事项」
-- 顶部还有当前时间、日期；暂停提醒时日期后面会显示「· 已暂停」
+- **逐像素透明**：她之外的地方完全透明，看不出窗口边界；点在空白处等于点在桌面上
+- **自己会眨眼**，偶尔连眨两下；点她一下也会眨一下
+- **暂停提醒时她会闭眼打盹**，恢复提醒后接着眨眼
+- **鼠标停在她身上**会浮出一张小卡片：现在几点、当前做什么（还剩多久、进度条）、接下来是什么；移开就收起
+- **滚轮上下滚**可以放大 / 缩小她（60%–180%），大小会记住；右键菜单里也能调、一键恢复 100%
 - **单击**打开主窗口；**按住拖动**可以放到任意位置（会记住坐标，多显示器也能拖过去）
-- **右键**菜单：打开时间表 / 新建日程 / 暂停提醒 / 总在最前 / 隐藏小窗 / 退出
+- **右键**菜单：打开时间表 / 新建日程 / 暂停提醒 / 总在最前 / 放大 / 缩小 / 恢复默认大小 / 隐藏小窗 / 退出
+- 不想悬停的时候也可以点开主窗口看今天的安排；托盘图标的提示文字里也有下一项
 - 不想看的时候：主窗口右侧「桌面小窗」开关关掉，或托盘菜单里取消勾选
+
+素材来自 DeepSeek 社区的「鲸鱼娘 / 大肥鱼」形象，来源、许可和本项目的改动见
+[assets/pet/NOTICE.md](assets/pet/NOTICE.md)。
+
+![鼠标停在她身上时的信息卡](docs/screenshot-pet-hover.png)
 
 ## 第一次使用
 
@@ -131,7 +139,7 @@
 
 | 开关 | 作用 |
 | --- | --- |
-| 桌面小窗 | 左下角那个常驻小卡片，关掉后只保留托盘图标 |
+| 桌面小窗 | 左下角那只鲸鱼娘，关掉后只保留托盘图标 |
 | 提示音 | 提醒卡片出现时播放系统提示音 |
 | 开机自启 | 写入/删除当前用户的开机启动项（启动文件夹快捷方式 + 注册表） |
 | 测试提醒 | 立刻弹一张示例卡片，用来确认提醒样式和提示音 |
@@ -139,7 +147,7 @@
 | 打开数据文件夹 | 打开 `data/`，可以直接备份 `schedule.json` |
 | 退出时间表 | 完全退出程序（关窗口只是缩到托盘） |
 
-宽限期（默认 30 分钟）在 `data/schedule.json` 的 `settings.grace_minutes` 里，想改可以退出程序后手动改这个数字。
+宽限期（默认 30 分钟）在 `data/schedule.json` 的 `settings.grace_minutes` 里，想改可以退出程序后手动改这个数字。小窗大小存在同一个文件的 `settings.pet_scale`（0.6–1.8，`1.0` 是默认大小），滚轮调整时会自动写回去。
 
 ## 数据与备份
 
@@ -171,8 +179,23 @@ Windows 11 会把新图标收进溢出区，点任务栏的「^」看看。确�
 **时间对不上？**
 程序用的是系统本地时间，请确认 Windows 时区设置正确。
 
+**鲸鱼娘点不到？**
+她身上完全透明的像素不接收鼠标，点在那儿等于点在桌面上；对准脸或裙子点就行。如果整个都不见了，看主窗口右侧「桌面小窗」开关和托盘菜单里的勾选。
+
 **想重新来一遍？**
 退出程序，删除 `data\schedule.json`（或把 `entries` 清空），再启动。
+
+## 素材与署名
+
+桌宠形象来自 [YunYueSama/codex-deepseek-pet](https://github.com/YunYueSama/codex-deepseek-pet)，
+按「大肥鱼项目署名许可 1.0」使用：可以修改和再分发，但要保留作者和仓库地址，并说明改了什么。
+
+`assets/pet/` 里的两帧由上游 `assets/whale/idle-front.png` 裁切对齐、加了地面阴影生成，
+用 `python tools\build_pet_assets.py` 可以重新生成；具体来源、改动和许可全文见
+[assets/pet/NOTICE.md](assets/pet/NOTICE.md)。
+
+「鲸鱼娘 / 大肥鱼」是 DeepSeek 社区的拟人二创形象，本项目只是个人自用的时间表工具，
+和 DeepSeek 官方无关。
 
 ## 文件结构
 
@@ -187,7 +210,10 @@ app/
   ui_week_grid.py      周课表网格（色块、翻周、悬停提示）
   ui_entry_dialog.py   新建/编辑对话框
   ui_reminder.py       右下角提醒卡片
-  ui_desktop_pet.py    左下角常驻小窗
+  ui_desktop_pet.py    左下角鲸鱼娘小窗（缩放、悬停、拖动）
+  ui_pet_info.py       悬停浮出的「现在／接下来」信息卡
+  ui_pet_menu.py       小窗右键菜单（自绘圆角卡片）
+  win32_pet.py         桌宠的原生分层窗口（逐像素透明、眨眼、拖动）
   widgets.py           自绘控件（按钮、开关、滚动区、日历）
   win32_tray.py        托盘图标（ctypes 调 Windows API，无第三方依赖）
   autostart.py         开机自启
@@ -195,9 +221,10 @@ app/
   icons.py             运行时生成图标
   theme.py             配色与字体
 tests/test_model.py    核心逻辑单元测试
-tools/                 开发自检脚本（截图、托盘探针、演示数据等）
+tools/                 开发自检脚本（截图、托盘探针、桌宠探针、素材生成等）
 data/                  日程、日志（自动生成）
 assets/                app.ico、app-256.png
+assets/pet/            鲸鱼娘两帧（睁眼/闭眼）与素材许可
 ```
 
 ## 开发与自检
@@ -217,6 +244,18 @@ python tools\ui_preview.py calendar
 python tools\ui_preview.py main        # 主窗口（课表视图）
 python tools\ui_preview.py main-list   # 主窗口（列表视图）
 python tools\ui_preview.py grid        # 单独的周课表
+python tools\ui_preview.py pet         # 鲸鱼娘桌宠（合成预览图）
+python tools\ui_preview.py pet-hover   # 悬停信息卡的预览图
+
+# 桌宠自检（原生分层窗口 / 鼠标事件 / 右键菜单 / 悬停 / 缩放）
+python tools\probe_pet_window.py
+python tools\probe_pet_events.py
+python tools\probe_pet_menu.py
+python tools\probe_pet_hover.py
+python tools\probe_pet_app.py      # 接到假 app 上跑一遍点击、菜单、位置保存
+
+# 重新生成桌宠素材（会从 GitHub 下载上游源图）
+python tools\build_pet_assets.py
 
 # 滚轮滚动自检（打印每格滚动的像素数）
 python tools\bench_scroll.py
@@ -225,4 +264,4 @@ python tools\bench_scroll.py
 python tools\seed_demo.py
 ```
 
-需要 Python 3.10+，只用到标准库 + 已经装好的 Pillow（生成图标）。托盘是直接用 ctypes 调 `Shell_NotifyIcon`，不需要 pywin32。
+需要 Python 3.10+，只用到标准库 + Pillow（生成图标、缩放桌宠帧）。托盘是直接用 ctypes 调 `Shell_NotifyIcon`，桌宠窗口也是 ctypes 调 `UpdateLayeredWindow`，不需要 pywin32。

@@ -206,9 +206,32 @@ class Application:
                     self.show_main()
                 elif kind == "command":
                     self._handle_tray_command(int(payload))
+                elif kind == "pet_click":
+                    if self.pet is not None:
+                        self.pet.on_click()
+                elif kind == "pet_moved":
+                    if self.pet is not None:
+                        self.pet.on_moved(*payload)
+                elif kind == "pet_menu":
+                    if self.pet is not None:
+                        self.pet.show_menu(*payload)
+                elif kind == "pet_enter":
+                    if self.pet is not None:
+                        self.pet.on_hover_enter()
+                elif kind == "pet_leave":
+                    if self.pet is not None:
+                        self.pet.on_hover_leave()
+                elif kind == "pet_dragstart":
+                    if self.pet is not None:
+                        self.pet.on_drag_start()
+                elif kind == "pet_wheel":
+                    if self.pet is not None:
+                        self.pet.on_wheel(int(payload))
+                elif kind == "pet_error":
+                    self.log.warning("桌宠窗口回调出错")
         except queue.Empty:
             pass
-        self.root.after(120, self._poll_events)
+        self.root.after(60, self._poll_events)
 
     def _tick(self) -> None:
         if self._quitting:
@@ -411,6 +434,7 @@ class Application:
     def _create_pet(self) -> None:
         try:
             self.pet = DesktopPet(self)
+            self.pet.set_paused(self.paused)
         except Exception:  # noqa: BLE001 - 小窗失败不影响主程序
             self.log.exception("创建桌面小窗失败")
             self.pet = None
@@ -711,6 +735,8 @@ class Application:
             self.tray_icon.notify("提醒已暂停", "右键托盘图标，选「恢复提醒」即可继续。")
         else:
             self.tray_icon.notify("提醒已恢复", "到点会照常提醒你。")
+        if self.pet is not None:
+            self.pet.set_paused(self.paused)
         self.main_window.update_status()
         self._update_tray_tooltip()
 
